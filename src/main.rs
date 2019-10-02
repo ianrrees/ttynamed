@@ -8,26 +8,30 @@ use directories::ProjectDirs;
 use glob::glob;
 #[macro_use]
 extern crate lazy_static;
-// use lazy_static;
 
 use regex::{Captures, Regex};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::File;
 use std::io::BufRead;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-// TODO just debugging
-use std::io::{self, Write};
-
+/// Information inherent to the TTY device; notably not including the /dev/ttywhatever
 struct Tty {
     manufacturer: Option<String>,
     model: Option<String>,
     serial: Option<String>,
 }
 
+/// Include inherent information, and present device handle
+struct PresentTty {
+    tty: Tty,
+    device: String,
+}
+
+/// Information that we store in the configuration file per device
 struct KnownTty {
     tty: Tty,
     friendly_name: String,
@@ -47,7 +51,7 @@ fn udevadm_decode<'a>(raw: &'a str) -> Cow<'a, str> {
     })
 }
 
-fn read_usb_info(dev: PathBuf) -> Option<Tty> {
+fn read_usb_info(dev: &PathBuf) -> Option<PresentTty> {
     let raw_info = Command::new("udevadm")
         .arg("info").arg("-q").arg("property").arg("--export").arg("-p")
         .arg(&dev)
@@ -77,14 +81,20 @@ fn read_usb_info(dev: PathBuf) -> Option<Tty> {
         fields.get(field).map(|raw| udevadm_decode(raw).into_owned())
     };
 
-    Some(Tty {
-        manufacturer: extract_field("ID_VENDOR_ENC"),
-        model:        extract_field("ID_MODEL_ENC"),
-        serial:       extract_field("ID_SERIAL_SHORT"),
-    })
+    if let Some(devname) = extract_field("DEVNAME") {
+        Some( PresentTty{
+            tty: Tty {
+                manufacturer: extract_field("ID_VENDOR_ENC"),
+                model:        extract_field("ID_MODEL_ENC"),
+                serial:       extract_field("ID_SERIAL_SHORT"),
+            },
+            device: devname })   
+    } else {
+        None
+    }
 }
 
-fn available_ttys() -> Vec<Tty> {
+fn available_ttys() -> Vec<PresentTty> {
     // Generate a list of device handles to inspect - https://stackoverflow.com/a/9914339
     let mut devs = Vec::new();
     for candidate in glob("/sys/class/tty/*/device/driver").expect("Failed to read glob pattern") {
@@ -98,7 +108,7 @@ fn available_ttys() -> Vec<Tty> {
 
     let mut ttys = Vec::new();
     for dev in devs {
-        if let Some(tty) = read_usb_info(dev) {
+        if let Some(tty) = read_usb_info(&dev) {
             ttys.push(tty);
         }
     }
@@ -106,8 +116,20 @@ fn available_ttys() -> Vec<Tty> {
     ttys
 }
 
+fn load_config(source: &PathBuf) -> Result<Vec<KnownTty>, String> {
+    let mut config = Vec::new();
+    if let Ok(file) = File::open(source) {
+        unimplemented!();
+    }
 
-fn main() {
+    Ok(config)
+}
+
+fn save_config(config: Vec<KnownTty>, to: PathBuf) {
+    unimplemented!();
+}
+
+fn run_app() -> Result<(), String> {
     let arguments = App::new("ttynamed - finds TTY devices by friendly name")
         .arg(Arg::with_name("NAME")
             .help("Friendly name of the TTY"))
@@ -122,7 +144,8 @@ fn main() {
                 .help("Friendly name for the new alias")
                 .required(true))
             .arg(Arg::with_name("device")
-                .help("/dev entry that the device is currently allocated to")))
+                .help("/dev entry that the device is currently allocated to")
+                .required(true)))
         .get_matches();
 
     let config_file_path = match arguments.value_of("config") {
@@ -138,13 +161,56 @@ fn main() {
     };
 
     if arguments.is_present("list") {
-        for tty in available_ttys() {
-            println!("{:?} {:?} {:?}", tty.manufacturer, tty.model, tty.serial);
+        for present in available_ttys() {
+            println!("{:?} {:?} {:?} {:?}",
+                present.device, present.tty.manufacturer, present.tty.model, present.tty.serial);
         }
     } else if let Some(add_arguments) = arguments.subcommand_matches("add") {
-        println!("TODO: Implement the add subcommand");
+        let friendly_name = add_arguments.value_of("name")
+            .expect("'name' argument is required, but missing");
+        let device = add_arguments.value_of("device")
+            .expect("'device' argument is required, but missing");
+
+        // Get information on the device to be added
+        let mut to_add = None;
+        for tty in available_ttys() {
+            if tty.device == device {
+                if to_add.is_none() {
+                    to_add = Some(tty);
+                } else {
+                    return Err("Somehow, multiple USB TTYs use that same device!?".to_string());
+                }
+            }
+        }
+        if to_add.is_none() {
+            return Err("Specified device doesn't seem to be a connected USB TTY.".to_string());
+        }
+
+        // Load the existing configuration file
+        let mut config = match load_config(&config_file_path) {
+            Ok(config) => config,
+            Err(error) => {
+                let message = format!("Failed to read configuration {:#?}: {}", config_file_path, error);
+                return Err(message);
+            }
+        };
+
+        // Add new device to configuration
+
+        // Write new configuration
     }
 
     println!("Hello, config is {:?}", config_file_path);
-    
+    Ok(())
+}
+
+/// Pattern from https://doc.rust-lang.org/std/process/fn.exit.html
+fn main() {
+    ::std::process::exit(match run_app() {
+       Ok(_) => 0,
+       Err(err) => {
+           eprintln!("{}", err);
+           1
+       }
+    });
 }
