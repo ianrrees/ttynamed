@@ -100,6 +100,7 @@ fn read_usb_info(dev: &PathBuf) -> Option<PresentTty> {
     }
 }
 
+// TODO Handle devices where there are multiple dev entries for the same device
 fn available_ttys() -> Vec<PresentTty> {
     // Generate a list of device handles to inspect - https://stackoverflow.com/a/9914339
     let mut devs = Vec::new();
@@ -214,19 +215,28 @@ fn run_app() -> Result<(), String> {
                                 stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))
                                     .expect("TTY colour change failed");
                             }
-                            println!("{}\t{:?}\t{:?}\t{:?}\t{:?}",
+                            println!("{}\t{}\t{}\t{}\t{}",
                                 known.0, // Friendly name
                                 present.device, manufacturer, model, serial);
                         }
                     }
                     if !printed {
                         if use_colour {
-                            stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
+                            if tty.manufacturer.is_none() ||
+                               tty.model.is_none() ||
+                               tty.serial.is_none() {
+                                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
+                                    .expect("Colour change failed");
+                            } else {
+                                stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
+                            }
                         }
-                        println!("\t{:?}\t{:?}\t{:?}\t{:?}",
+                        println!("\t{}\t{}\t{}\t{}",
                             present.device, manufacturer, model, serial);
                     }
                 }
+
+                // Also, display the TTY hardware we know about, but that isn't connected
                 for known in &config.ttys {
                     if !not_missing.contains(known.0) {
                         let tty = known.1;
@@ -235,9 +245,9 @@ fn run_app() -> Result<(), String> {
                         let serial = tty.serial.clone().unwrap_or("None".to_string());
                         if use_colour {
                             stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))
-                                .expect("TTY colour change failed");
+                                .expect("Colour change failed");
                         }
-                        println!("{}\t{}\t{:?}\t{:?}\t{:?}",
+                        println!("{}\t{}\t{}\t{}\t{}",
                                 known.0, // Friendly name
                                 "(Not present)", manufacturer, model, serial);
                     }
