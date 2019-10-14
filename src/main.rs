@@ -14,11 +14,12 @@ use serde::{Serialize, Deserialize};
 use toml;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, Read};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 /// Information inherent to the TTY device; notably not including the /dev/ttywhatever
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -185,11 +186,75 @@ fn run_app() -> Result<(), String> {
         }
     };
 
+    let use_colour = true; // TODO make this smarter
     if arguments.is_present("list") {
-        for present in available_ttys() {
-            println!("{:?} {:?} {:?} {:?}",
-                present.device, present.tty.manufacturer, present.tty.model, present.tty.serial);
-        }
+        // TODO Move this block up, and only return Err if it's required (here and below)
+        // Load the existing configuration file
+        let mut config = match load_config(&config_file_path) {
+            Ok(config) => {
+                let mut stdout = StandardStream::stdout(ColorChoice::Always);
+
+                let mut not_missing = HashSet::new();
+
+                for present in available_ttys() {
+                    let mut printed = false;
+                    let tty = &present.tty;
+
+                    let manufacturer = tty.manufacturer.clone().unwrap_or("None".to_string());
+                    let model = tty.model.clone().unwrap_or("None".to_string());
+                    let serial = tty.serial.clone().unwrap_or("None".to_string());
+
+                    for known in &config.ttys {
+                        if tty == known.1 {
+                            // present tty is one we know about
+                            printed = true;
+
+                            not_missing.insert(known.0);
+                            if use_colour {
+                                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))
+                                    .expect("TTY colour change failed");
+                            }
+                            println!("{}\t{:?}\t{:?}\t{:?}\t{:?}",
+                                known.0, // Friendly name
+                                present.device, manufacturer, model, serial);
+                        }
+                    }
+                    if !printed {
+                        if use_colour {
+                            stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
+                        }
+                        println!("\t{:?}\t{:?}\t{:?}\t{:?}",
+                            present.device, manufacturer, model, serial);
+                    }
+                }
+                for known in &config.ttys {
+                    if !not_missing.contains(known.0) {
+                        let tty = known.1;
+                        let manufacturer = tty.manufacturer.clone().unwrap_or("None".to_string());
+                        let model = tty.model.clone().unwrap_or("None".to_string());
+                        let serial = tty.serial.clone().unwrap_or("None".to_string());
+                        if use_colour {
+                            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))
+                                .expect("TTY colour change failed");
+                        }
+                        println!("{}\t{}\t{:?}\t{:?}\t{:?}",
+                                known.0, // Friendly name
+                                "(Not present)", manufacturer, model, serial);
+                    }
+                }
+            },
+            Err(error) => {
+                for present in available_ttys() {
+                    println!("{:?} {:?} {:?} {:?}",
+                        present.device, present.tty.manufacturer, present.tty.model,
+                        present.tty.serial);
+                }
+
+                let message = format!("Failed to read configuration {:#?}: {}",
+                    config_file_path, error);
+                return Err(message);
+            }
+        };
     } else if let Some(friendly_name) = arguments.value_of("name") {
         // TODO Move this block up, and only return Err if it's required (here and below)
         // Load the existing configuration file
