@@ -1,6 +1,6 @@
 
 extern crate clap;
-use clap::{Arg, App, SubCommand};
+use clap::{Arg, App, AppSettings, SubCommand};
 
 extern crate directories;
 use directories::ProjectDirs;
@@ -16,7 +16,7 @@ use toml;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::Command;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
@@ -128,12 +128,12 @@ fn load_config(source: &PathBuf) -> Result<Configuration, String> {
         // Read the file to a string
         let mut buffer = String::new();
         if let Err(error) = file.read_to_string(&mut buffer) {
-            return Err(format!("Error reading config file: {}, either fix or remove it", error));
+            return Err(format!("Error reading config file {:?}: {}", source, error));
         }
 
         match toml::from_str(&buffer) {
             Ok(cfg) => Ok(cfg),
-            Err(error) => Err(format!("Parse error: {}", error))
+            Err(error) => Err(format!("Error parsing {:?}: {}", source, error))
         }
     } else {
         Ok(Configuration::default())
@@ -155,127 +155,61 @@ fn save_config(config: Configuration, to: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+fn pon(raw: &Option<String>) -> String {
+    raw.clone().unwrap_or("None".to_string())
+}
+
 fn run_app() -> Result<(), String> {
-    let mut app = App::new("ttynamed - finds TTY devices by friendly name")
-        .arg(Arg::with_name("name")
-            .help("Friendly name of the TTY"))
-        .arg(Arg::with_name("config")
-            .help("Config file to use"))
-        .arg(Arg::with_name("list") // TODO Maybe if this is subcommand, can require that one subcommand is given, display help otherwise?
-            .help("Shows currently available TTYs")
-            .short("l").long("list"))
-        .subcommand(SubCommand::with_name("add")
-            .about("Add a tty device alias to our known aliases")
+    // Weird structure allows the subcommand names to be extracted before being consumed by the App
+    // TODO Add delete command
+    let subs = vec!(
+        SubCommand::with_name("list")
+            .about("Shows available TTYs and aliases")
+            ,
+        SubCommand::with_name("add")
+            .about("Add or modify a tty device alias")
+            .arg(Arg::with_name("device")
+                .help("/dev entry that the device is currently allocated to")
+                .required(true))
             .arg(Arg::with_name("name")
                 .help("Friendly name for the new alias")
                 .required(true))
-            .arg(Arg::with_name("device")
-                .help("/dev entry that the device is currently allocated to")
-                .required(true)));
+            // TODO Add optional --hide flag, to hide the TTY in listings
+            ,
+        SubCommand::with_name("delete")
+            .about("Delete a tty device alias")
+            .arg(Arg::with_name("name") // TODO add ability to delete based on current device?
+                .help("Friendly name of the device to be deleted")
+                .required(true))
+            );
 
-    let arguments = app.get_matches();
+    let subcommand_names: Vec<&str> = subs.iter().map(|s| s.get_name()).collect();
+
+    let arguments = App::new("ttynamed - finds TTY devices by friendly name")
+        .subcommands(subs)
+        .arg(Arg::with_name("name") // This catches the my_device in "ttynamed my_device"
+            .help("Friendly name of the TTY"))
+        .arg(Arg::with_name("config")
+            .help("Config file to use"))
+        .setting(AppSettings::ArgRequiredElseHelp)
+        .get_matches();
 
     let config_file_path = match arguments.value_of("config") {
         Some(config) => PathBuf::from(config),
         None => match ProjectDirs::from("org", "TTY Named", "ttynamed") {
             Some(proj_dirs) => proj_dirs.config_dir().join("ttys"),
             None => {
-                // TODO fancier logging on stderr
-                println!("Warning! Couldn't determine config file path, trying ~/.ttynamed");
+                eprintln!("Warning! Couldn't determine config file path, trying ~/.ttynamed");
                 PathBuf::from("~/.ttynamed")
             }
         }
     };
 
     let use_colour = true; // TODO make this smarter
-    if arguments.is_present("list") {
-        // TODO Move this block up, and only return Err if it's required (here and below)
-        // Load the existing configuration file
-        let mut config = match load_config(&config_file_path) {
-            Ok(config) => {
-                let mut stdout = StandardStream::stdout(ColorChoice::Always);
 
-                let mut not_missing = HashSet::new();
-
-                for present in available_ttys() {
-                    let mut printed = false;
-                    let tty = &present.tty;
-
-                    let manufacturer = tty.manufacturer.clone().unwrap_or("None".to_string());
-                    let model = tty.model.clone().unwrap_or("None".to_string());
-                    let serial = tty.serial.clone().unwrap_or("None".to_string());
-
-                    for known in &config.ttys {
-                        if tty == known.1 {
-                            // present tty is one we know about
-                            printed = true;
-
-                            not_missing.insert(known.0);
-                            if use_colour {
-                                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))
-                                    .expect("TTY colour change failed");
-                            }
-                            println!("{}\t{}\t{}\t{}\t{}",
-                                known.0, // Friendly name
-                                present.device, manufacturer, model, serial);
-                        }
-                    }
-                    if !printed {
-                        if use_colour {
-                            if tty.manufacturer.is_none() ||
-                               tty.model.is_none() ||
-                               tty.serial.is_none() {
-                                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
-                                    .expect("Colour change failed");
-                            } else {
-                                stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
-                            }
-                        }
-                        println!("\t{}\t{}\t{}\t{}",
-                            present.device, manufacturer, model, serial);
-                    }
-                }
-
-                // Also, display the TTY hardware we know about, but that isn't connected
-                for known in &config.ttys {
-                    if !not_missing.contains(known.0) {
-                        let tty = known.1;
-                        let manufacturer = tty.manufacturer.clone().unwrap_or("None".to_string());
-                        let model = tty.model.clone().unwrap_or("None".to_string());
-                        let serial = tty.serial.clone().unwrap_or("None".to_string());
-                        if use_colour {
-                            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))
-                                .expect("Colour change failed");
-                        }
-                        println!("{}\t{}\t{}\t{}\t{}",
-                                known.0, // Friendly name
-                                "(Not present)", manufacturer, model, serial);
-                    }
-                }
-            },
-            Err(error) => {
-                for present in available_ttys() {
-                    println!("{:?} {:?} {:?} {:?}",
-                        present.device, present.tty.manufacturer, present.tty.model,
-                        present.tty.serial);
-                }
-
-                let message = format!("Failed to read configuration {:#?}: {}",
-                    config_file_path, error);
-                return Err(message);
-            }
-        };
-    } else if let Some(friendly_name) = arguments.value_of("name") {
-        // TODO Move this block up, and only return Err if it's required (here and below)
-        // Load the existing configuration file
-        let mut config = match load_config(&config_file_path) {
-            Ok(config) => config,
-            Err(error) => {
-                let message = format!("Failed to read configuration {:#?}: {}",
-                    config_file_path, error);
-                return Err(message);
-            }
-        };
+    // User wants to retrieve the /dev path of TTY given the friendly name
+    if let Some(friendly_name) = arguments.value_of("name") {
+        let config = load_config(&config_file_path)?;
 
         let tty = match config.ttys.get(friendly_name) {
             Some(tty) => tty,
@@ -284,22 +218,36 @@ fn run_app() -> Result<(), String> {
             }
         };
 
+        // TODO Be a little more sophisticated here; what if there are multiple matching candidates?
+        let mut pick = None;
         for candidate in available_ttys() {
             if &candidate.tty == tty {
-                println!("{}", candidate.device);
-                return Ok(());
+                if pick.is_none() {
+                    pick = Some(candidate.device);
+                } else {
+                    return Err(format!("Found multiple devices that could be {}", friendly_name))
+                }
             }
         }
 
-        return Err(format!("That device doesn't appear to be present"));
+        return match pick {
+            Some(pick) => {
+                println!("{}", pick);
+                Ok(())
+            },
+            None => Err(format!("That device doesn't appear to be present"))
+        }
 
     } else if let Some(add_arguments) = arguments.subcommand_matches("add") {
         let friendly_name = add_arguments.value_of("name")
             .expect("'name' argument is required, but missing");
 
+        let mut config = load_config(&config_file_path)?;
+
         // TODO: Validation on friendly_name:
         //   Must be a valid TOML key
         //   Can't look like an argument or subcommand
+        // TODO: Allow for modifying existing config? (may get that for free, check)
         let device = add_arguments.value_of("device")
             .expect("'device' argument is required, but missing");
 
@@ -318,25 +266,98 @@ fn run_app() -> Result<(), String> {
             return Err("Specified device doesn't seem to be a connected USB TTY.".to_string());
         }
 
-        // Load the existing configuration file
-        let mut config = match load_config(&config_file_path) {
-            Ok(config) => config,
-            Err(error) => {
-                let message = format!("Failed to read configuration {:#?}: {}",
-                    config_file_path, error);
-                return Err(message);
-            }
-        };
-
-        // Add new device to configuration
         config.ttys.insert(friendly_name.to_string(), to_add.unwrap().tty);
 
-        // Write new configuration
-        save_config(config, config_file_path); // TODO handle error
+        save_config(config, config_file_path)?;
 
-    } else {
-        println!("Should display the help menu here..."); // TODO
-        // app.print_help();
+        // TODO print a nice confirmation message
+
+    // Delete a TTY alias
+    } else if let Some(delete_arguments) = arguments.subcommand_matches("delete") {
+        let friendly_name = delete_arguments.value_of("name")
+            .expect("'name' argument is required, but missing");
+
+        let mut config = load_config(&config_file_path)?;
+
+        if config.ttys.remove(friendly_name).is_some() {
+            println!("{} was removed successfully!", friendly_name);
+        } else {
+            return Err(format!("{} is not a current friendly name, so was not deleted.",
+                friendly_name));
+        }
+
+        save_config(config, config_file_path)?;
+
+    // Show a list of connected and known devices
+    } else if arguments.is_present("list") {
+        // Render differently depending on whether we have a configuration file
+        match load_config(&config_file_path) {
+            Ok(config) => {
+                let mut stdout = StandardStream::stdout(ColorChoice::Always);
+
+                let mut not_missing = HashSet::new();
+
+                for present in available_ttys() {
+                    let mut printed = false;
+                    let tty = &present.tty;
+
+                    // TODO use caution colour if there are multiple devices that match a known configuration
+                    for known in config.ttys.iter().filter(|k| tty == k.1).map(|k| k.0) {
+                        printed = true;
+
+                        not_missing.insert(known);
+                        if use_colour {
+                            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))
+                                .expect("TTY colour change failed");
+                        }
+                        println!("{}\t{}\t{}\t{}\t{}",
+                            known, present.device, pon(&tty.manufacturer),
+                            pon(&tty.model), pon(&tty.serial));
+                    }
+
+                    if !printed {
+                        if use_colour {
+                            if tty.manufacturer.is_none() ||
+                               tty.model.is_none() ||
+                               tty.serial.is_none() {
+                                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
+                                    .expect("Colour change failed");
+                            } else {
+                                stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
+                            }
+                        }
+                        println!("\t{}\t{}\t{}\t{}",
+                            present.device, pon(&tty.manufacturer),
+                            pon(&tty.model), pon(&tty.serial));
+                    }
+                }
+
+                // Also, display the TTY hardware we know about, but that isn't connected
+                for known in config.ttys.iter().filter(|k| !not_missing.contains(k.0)) {
+                    if use_colour {
+                        stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))
+                            .expect("Colour change failed");
+                    }
+                    println!("{}\t{}\t{}\t{}\t{}",
+                        known.0, // Friendly name
+                        "(Not present)", pon(&known.1.manufacturer),
+                        pon(&known.1.model), pon(&known.1.serial));
+                }
+            },
+
+            // Config file wasn't successfully loaded; just list what we know we've got
+            Err(error) => {
+                eprintln!("{}", error);
+                println!("");
+                for present in available_ttys() {
+                    let tty = present.tty;
+                    println!("{}\t{}\t{}\t{}", present.device, pon(&tty.manufacturer),
+                        pon(&tty.model), pon(&tty.serial));
+                }
+
+                return Err(String::new());
+            }
+        };
     }
 
     Ok(())
@@ -345,10 +366,12 @@ fn run_app() -> Result<(), String> {
 /// Pattern from https://doc.rust-lang.org/std/process/fn.exit.html
 fn main() {
     ::std::process::exit(match run_app() {
-       Ok(_) => 0,
-       Err(err) => {
-           eprintln!("{}", err);
-           1
+        Ok(_) => 0,
+        Err(err) => {
+            if !err.is_empty() {
+                eprintln!("{}", err);
+            }
+            1
        }
     });
 }
