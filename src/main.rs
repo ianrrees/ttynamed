@@ -14,6 +14,7 @@ use serde::{Serialize, Deserialize};
 use toml;
 
 use std::borrow::Cow;
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, Read};
@@ -207,157 +208,182 @@ fn run_app() -> Result<(), String> {
 
     let use_colour = true; // TODO make this smarter
 
-    // User wants to retrieve the /dev path of TTY given the friendly name
-    if let Some(friendly_name) = arguments.value_of("name") {
-        let config = load_config(&config_file_path)?;
+    match arguments.subcommand() {
+        ("list", _) => {
+            const NUM_COLS: usize = 5;
+            let mut rows = Vec::<(termcolor::Color, [String; NUM_COLS])>::new();
 
-        let tty = match config.ttys.get(friendly_name) {
-            Some(tty) => tty,
-            None => {
-                return Err(format!("{} isn't a known friendly name.", friendly_name));
-            }
-        };
+            // Render differently depending on whether we have a configuration file
+            match load_config(&config_file_path) {
+                Ok(config) => {
+                    let mut stdout = StandardStream::stdout(ColorChoice::Always);
+                    let mut not_missing = HashSet::new();
 
-        // TODO Be a little more sophisticated here; what if there are multiple matching candidates?
-        let mut pick = None;
-        for candidate in available_ttys() {
-            if &candidate.tty == tty {
-                if pick.is_none() {
-                    pick = Some(candidate.device);
-                } else {
-                    return Err(format!("Found multiple devices that could be {}", friendly_name))
-                }
-            }
-        }
+                    for present in available_ttys() {
+                        let mut printed = false;
+                        let tty = &present.tty;
 
-        return match pick {
-            Some(pick) => {
-                println!("{}", pick);
-                Ok(())
-            },
-            None => Err(format!("That device doesn't appear to be present"))
-        }
+                        // TODO use caution colour if there are multiple devices that match a known configuration
+                        for known in config.ttys.iter().filter(|k| tty == k.1).map(|k| k.0) {
+                            printed = true;
 
-    } else if let Some(add_arguments) = arguments.subcommand_matches("add") {
-        let friendly_name = add_arguments.value_of("name")
-            .expect("'name' argument is required, but missing");
-
-        let mut config = load_config(&config_file_path)?;
-
-        // TODO: Validation on friendly_name:
-        //   Must be a valid TOML key
-        //   Can't look like an argument or subcommand
-        // TODO: Allow for modifying existing config? (may get that for free, check)
-        let device = add_arguments.value_of("device")
-            .expect("'device' argument is required, but missing");
-
-        // Get information on the device to be added
-        let mut to_add = None;
-        for tty in available_ttys() {
-            if tty.device == device {
-                if to_add.is_none() {
-                    to_add = Some(tty);
-                } else {
-                    return Err("Somehow, multiple USB TTYs use that same device!?".to_string());
-                }
-            }
-        }
-        if to_add.is_none() {
-            return Err("Specified device doesn't seem to be a connected USB TTY.".to_string());
-        }
-
-        config.ttys.insert(friendly_name.to_string(), to_add.unwrap().tty);
-
-        save_config(config, config_file_path)?;
-
-        // TODO print a nice confirmation message
-
-    // Delete a TTY alias
-    } else if let Some(delete_arguments) = arguments.subcommand_matches("delete") {
-        let friendly_name = delete_arguments.value_of("name")
-            .expect("'name' argument is required, but missing");
-
-        let mut config = load_config(&config_file_path)?;
-
-        if config.ttys.remove(friendly_name).is_some() {
-            println!("{} was removed successfully!", friendly_name);
-        } else {
-            return Err(format!("{} is not a current friendly name, so was not deleted.",
-                friendly_name));
-        }
-
-        save_config(config, config_file_path)?;
-
-    // Show a list of connected and known devices
-    } else if arguments.is_present("list") {
-        // Render differently depending on whether we have a configuration file
-        match load_config(&config_file_path) {
-            Ok(config) => {
-                let mut stdout = StandardStream::stdout(ColorChoice::Always);
-
-                let mut not_missing = HashSet::new();
-
-                for present in available_ttys() {
-                    let mut printed = false;
-                    let tty = &present.tty;
-
-                    // TODO use caution colour if there are multiple devices that match a known configuration
-                    for known in config.ttys.iter().filter(|k| tty == k.1).map(|k| k.0) {
-                        printed = true;
-
-                        not_missing.insert(known);
-                        if use_colour {
-                            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))
-                                .expect("TTY colour change failed");
+                            not_missing.insert(known);
+                            rows.push((Color::Green, [known.clone(), present.device.clone(),
+                                pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
                         }
-                        println!("{}\t{}\t{}\t{}\t{}",
-                            known, present.device, pon(&tty.manufacturer),
-                            pon(&tty.model), pon(&tty.serial));
+
+                        if !printed {
+                            let colour = if tty.manufacturer.is_none() ||
+                                            tty.model.is_none() ||
+                                            tty.serial.is_none() {
+                                             Color::Yellow
+                                         } else {
+                                             Color::Black // Sentinel for no colour
+                                         };
+
+                            rows.push((colour, [String::new(), present.device,
+                                pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
+                        }
                     }
 
-                    if !printed {
+                    // Also, display the TTY hardware we know about, but that isn't connected
+                    for known in config.ttys.iter().filter(|k| !not_missing.contains(k.0)) {
+                        rows.push((Color::Red, [known.0.clone(), "(missing)".to_string(),
+                            pon(&known.1.manufacturer), pon(&known.1.model), pon(&known.1.serial)]));
+                    }
+
+                    let mut widths = [0usize; NUM_COLS];
+                    for row in &rows {
+                        for (column_index, field) in row.1.iter().enumerate() {
+                            widths[column_index] = cmp::max(field.len(), widths[column_index]);
+                        }
+                    }
+
+                    for row in &rows {
                         if use_colour {
-                            if tty.manufacturer.is_none() ||
-                               tty.model.is_none() ||
-                               tty.serial.is_none() {
-                                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
-                                    .expect("Colour change failed");
-                            } else {
+                            let colour = row.0;
+                            if colour == Color::Black {
                                 stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
+                            } else {
+                                stdout.set_color(ColorSpec::new().set_fg(Some(colour)))
+                                    .expect("Colour change failed");
                             }
                         }
-                        println!("\t{}\t{}\t{}\t{}",
-                            present.device, pon(&tty.manufacturer),
+
+                        for (column_index, field) in row.1.iter().enumerate() {
+                            print!("{:1$}", field, widths[column_index] + 2);
+                        }
+                        println!("");
+                    }
+                },
+
+                // Config file wasn't successfully loaded; just list what we know we've got
+                Err(error) => {
+                    eprintln!("{}", error);
+                    println!("");
+                    for present in available_ttys() {
+                        let tty = present.tty;
+                        println!("{}\t{}\t{}\t{}", present.device, pon(&tty.manufacturer),
                             pon(&tty.model), pon(&tty.serial));
                     }
-                }
 
-                // Also, display the TTY hardware we know about, but that isn't connected
-                for known in config.ttys.iter().filter(|k| !not_missing.contains(k.0)) {
-                    if use_colour {
-                        stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))
-                            .expect("Colour change failed");
-                    }
-                    println!("{}\t{}\t{}\t{}\t{}",
-                        known.0, // Friendly name
-                        "(Not present)", pon(&known.1.manufacturer),
-                        pon(&known.1.model), pon(&known.1.serial));
+                    return Err(String::new());
                 }
-            },
+            };
+        },
 
-            // Config file wasn't successfully loaded; just list what we know we've got
-            Err(error) => {
-                eprintln!("{}", error);
-                println!("");
-                for present in available_ttys() {
-                    let tty = present.tty;
-                    println!("{}\t{}\t{}\t{}", present.device, pon(&tty.manufacturer),
-                        pon(&tty.model), pon(&tty.serial));
-                }
+        ("delete", Some(delete_arguments)) => {
+            let friendly_name = delete_arguments.value_of("name")
+                .expect("'name' argument is required, but missing");
 
-                return Err(String::new());
+            let mut config = load_config(&config_file_path)?;
+
+            if config.ttys.remove(friendly_name).is_some() {
+                println!("{} was removed successfully!", friendly_name);
+            } else {
+                return Err(format!("{} is not a current friendly name, so was not deleted.",
+                    friendly_name));
             }
-        };
+
+            save_config(config, config_file_path)?;
+
+            // Show a list of connected and known devices
+            // TODO Nicer formatting of output table - align columns
+        },
+
+        ("add", Some(add_arguments)) => {
+            let friendly_name = add_arguments.value_of("name")
+                .expect("'name' argument is required, but missing");
+
+            let mut config = load_config(&config_file_path)?;
+
+            // TODO: Validation on friendly_name:
+            //   Must be a valid TOML key
+            //   Can't look like an argument or subcommand
+            // TODO: Allow for modifying existing config? (may get that for free, check)
+            let device = add_arguments.value_of("device")
+                .expect("'device' argument is required, but missing");
+
+            // Get information on the device to be added
+            let mut to_add = None;
+            for tty in available_ttys() {
+                if tty.device == device {
+                    if to_add.is_none() {
+                        to_add = Some(tty);
+                    } else {
+                        return Err("Somehow, multiple USB TTYs use that same device!?".to_string());
+                    }
+                }
+            }
+            if to_add.is_none() {
+                return Err("Specified device doesn't seem to be a connected USB TTY.".to_string());
+            }
+
+            config.ttys.insert(friendly_name.to_string(), to_add.unwrap().tty);
+
+            save_config(config, config_file_path)?;
+
+            // TODO print a nice confirmation message
+        },
+
+        // No subcommand
+        ("", None) => {
+            // User wants to retrieve the /dev path of TTY given the friendly name
+            if let Some(friendly_name) = arguments.value_of("name") {
+                let config = load_config(&config_file_path)?;
+
+                let tty = match config.ttys.get(friendly_name) {
+                    Some(tty) => tty,
+                    None => {
+                        return Err(format!("{} isn't a known friendly name.", friendly_name));
+                    }
+                };
+
+                // TODO Be a little more sophisticated here; what if there are multiple matching candidates?
+                let mut pick = None;
+                for candidate in available_ttys() {
+                    if &candidate.tty == tty {
+                        if pick.is_none() {
+                            pick = Some(candidate.device);
+                        } else {
+                            return Err(format!("Found multiple devices that could be {}", friendly_name))
+                        }
+                    }
+                }
+
+                return match pick {
+                    Some(pick) => {
+                        println!("{}", pick);
+                        Ok(())
+                    },
+                    None => Err(format!("That device doesn't appear to be present"))
+                }
+
+            } else {
+                return Err("No subcommand nor friendly_name...".to_string()); // Shouldn't be able to get here
+            }
+        },
+        _ => unreachable!(),
     }
 
     Ok(())
