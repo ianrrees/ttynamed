@@ -126,7 +126,6 @@ fn available_ttys() -> Vec<PresentTty> {
 
 fn load_config(source: &PathBuf) -> Result<Configuration, String> {
     if let Ok(mut file) = File::open(source) {
-        // Read the file to a string
         let mut buffer = String::new();
         if let Err(error) = file.read_to_string(&mut buffer) {
             return Err(format!("Error reading config file {:?}: {}", source, error));
@@ -162,7 +161,6 @@ fn pon(raw: &Option<String>) -> String {
 
 fn run_app() -> Result<(), String> {
     // Weird structure allows the subcommand names to be extracted before being consumed by the App
-    // TODO Add delete command
     let subs = vec!(
         SubCommand::with_name("list")
             .about("Shows available TTYs and aliases")
@@ -184,7 +182,7 @@ fn run_app() -> Result<(), String> {
                 .required(true))
             );
 
-    let subcommand_names: Vec<&str> = subs.iter().map(|s| s.get_name()).collect();
+    let subcommand_names: Vec<String> = subs.iter().map(|s| s.get_name().to_string()).collect();
 
     let arguments = App::new("ttynamed - finds TTY devices by friendly name")
         .subcommands(subs)
@@ -206,7 +204,7 @@ fn run_app() -> Result<(), String> {
         }
     };
 
-    let use_colour = true; // TODO make this smarter
+    let use_colour = true; // TODO make this smarter, and use it to decide whether to pretty-print tables
 
     match arguments.subcommand() {
         ("list", _) => {
@@ -309,15 +307,19 @@ fn run_app() -> Result<(), String> {
         },
 
         ("add", Some(add_arguments)) => {
-            let friendly_name = add_arguments.value_of("name")
-                .expect("'name' argument is required, but missing");
+            let friendly = add_arguments.value_of("name")
+                .expect("'name' argument is required, but missing").to_string();
+
+            if subcommand_names.contains(&friendly) {
+                return Err(format!("Invalid friendly name; '{}' is a subcommand.", friendly));
+            }
+
+            if Regex::new(r"[^a-zA-Z0-9_--]").unwrap().is_match(&friendly) {
+                return Err(format!("Friendly names must only contain letters, digits, _, and -"));
+            }
 
             let mut config = load_config(&config_file_path)?;
 
-            // TODO: Validation on friendly_name:
-            //   Must be a valid TOML key
-            //   Can't look like an argument or subcommand
-            // TODO: Allow for modifying existing config? (may get that for free, check)
             let device = add_arguments.value_of("device")
                 .expect("'device' argument is required, but missing");
 
@@ -335,17 +337,32 @@ fn run_app() -> Result<(), String> {
             if to_add.is_none() {
                 return Err("Specified device doesn't seem to be a connected USB TTY.".to_string());
             }
+            let to_add = to_add.unwrap();
 
-            config.ttys.insert(friendly_name.to_string(), to_add.unwrap().tty);
+            // Remove any matching entries in the config; we're effectively modifying, not adding
+            let mut to_remove = Vec::new();
+            for (name, tty) in &config.ttys {
+                if tty == &to_add.tty {
+                    to_remove.push(name.clone());
+                }
+            }
+            for name in &to_remove {
+                config.ttys.remove(name);
+            }
+
+            config.ttys.insert(friendly.clone(), to_add.tty);
 
             save_config(config, config_file_path)?;
 
-            // TODO print a nice confirmation message
+            if to_remove.is_empty() {
+                println!("{} was added successfully!", friendly);
+            } else {
+                println!("{} was modified successfully!", friendly);
+            }
         },
 
-        // No subcommand
+        // No subcommand, user wants to retrieve the /dev path of TTY given the friendly name
         ("", None) => {
-            // User wants to retrieve the /dev path of TTY given the friendly name
             if let Some(friendly_name) = arguments.value_of("name") {
                 let config = load_config(&config_file_path)?;
 
@@ -356,14 +373,13 @@ fn run_app() -> Result<(), String> {
                     }
                 };
 
-                // TODO Be a little more sophisticated here; what if there are multiple matching candidates?
                 let mut pick = None;
                 for candidate in available_ttys() {
                     if &candidate.tty == tty {
                         if pick.is_none() {
                             pick = Some(candidate.device);
                         } else {
-                            return Err(format!("Found multiple devices that could be {}", friendly_name))
+                            return Err(format!("Multiple devices could be {}", friendly_name))
                         }
                     }
                 }
@@ -377,7 +393,7 @@ fn run_app() -> Result<(), String> {
                 }
 
             } else {
-                return Err("No subcommand nor friendly_name...".to_string()); // Shouldn't be able to get here
+                unreachable!(); // No subcommand nor friendly_name
             }
         },
         _ => unreachable!(),
