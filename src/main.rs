@@ -216,7 +216,6 @@ fn run_app() -> Result<(), String> {
             // Render differently depending on whether we have a configuration file
             match load_config(&config_file_path) {
                 Ok(config) => {
-                    let mut stdout = StandardStream::stdout(ColorChoice::Always);
                     let mut not_missing = HashSet::new();
 
                     for present in available_ttys() {
@@ -251,30 +250,6 @@ fn run_app() -> Result<(), String> {
                         rows.push((Color::Red, [known.0.clone(), "(missing)".to_string(),
                             pon(&known.1.manufacturer), pon(&known.1.model), pon(&known.1.serial)]));
                     }
-
-                    let mut widths = [0usize; NUM_COLS];
-                    for row in &rows {
-                        for (column_index, field) in row.1.iter().enumerate() {
-                            widths[column_index] = cmp::max(field.len(), widths[column_index]);
-                        }
-                    }
-
-                    for row in &rows {
-                        if use_colour {
-                            let colour = row.0;
-                            if colour == Color::Black {
-                                stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
-                            } else {
-                                stdout.set_color(ColorSpec::new().set_fg(Some(colour)))
-                                    .expect("Colour change failed");
-                            }
-                        }
-
-                        for (column_index, field) in row.1.iter().enumerate() {
-                            print!("{:1$}", field, widths[column_index] + 2);
-                        }
-                        println!("");
-                    }
                 },
 
                 // Config file wasn't successfully loaded; just list what we know we've got
@@ -283,13 +258,38 @@ fn run_app() -> Result<(), String> {
                     println!("");
                     for present in available_ttys() {
                         let tty = present.tty;
-                        println!("{}\t{}\t{}\t{}", present.device, pon(&tty.manufacturer),
-                            pon(&tty.model), pon(&tty.serial));
+                        rows.push((Color::Black, [present.device, pon(&tty.manufacturer),
+                            pon(&tty.model), pon(&tty.serial), String::new()]));
                     }
-
-                    return Err(String::new());
                 }
             };
+
+            let mut widths = [0usize; NUM_COLS];
+            for row in &rows {
+                for (column_index, field) in row.1.iter().enumerate() {
+                    widths[column_index] = cmp::max(field.len(), widths[column_index]);
+                }
+            }
+
+            let mut stdout = StandardStream::stdout(ColorChoice::Always);
+            for row in &rows {
+                if use_colour {
+                    let colour = row.0;
+                    if colour == Color::Black {
+                        stdout.set_color(&ColorSpec::new()).expect("Colour change failed");
+                    } else {
+                        stdout.set_color(ColorSpec::new().set_fg(Some(colour)))
+                            .expect("Colour change failed");
+                    }
+                }
+
+                for (column_index, field) in row.1.iter().enumerate() {
+                    if widths[column_index] > 0 {
+                        print!("{:1$}", field, widths[column_index] + 2);
+                    }
+                }
+                println!("");
+            }
         },
 
         ("delete", Some(delete_arguments)) => {
@@ -300,15 +300,12 @@ fn run_app() -> Result<(), String> {
 
             if config.ttys.remove(friendly_name).is_some() {
                 println!("{} was removed successfully!", friendly_name);
+                save_config(config, config_file_path)?;
+
             } else {
                 return Err(format!("{} is not a current friendly name, so was not deleted.",
                     friendly_name));
             }
-
-            save_config(config, config_file_path)?;
-
-            // Show a list of connected and known devices
-            // TODO Nicer formatting of output table - align columns
         },
 
         ("add", Some(add_arguments)) => {
