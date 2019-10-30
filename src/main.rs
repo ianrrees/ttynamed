@@ -184,7 +184,10 @@ fn run_app() -> Result<(), String> {
 
     let subcommand_names: Vec<String> = subs.iter().map(|s| s.get_name().to_string()).collect();
 
-    let arguments = App::new("ttynamed - finds TTY devices by friendly name")
+    let arguments = App::new(clap::crate_name!())
+        .version(clap::crate_version!())
+        .author(clap::crate_authors!())
+        .about("Finds USB TTY devices by friendly name")
         .subcommands(subs)
         .arg(Arg::with_name("name") // This catches the my_device in "ttynamed my_device"
             .help("Friendly name of the TTY"))
