@@ -1,7 +1,7 @@
 # ttynamed
 Lets you assign "friendly names" to particular USB serial devices, so that a device's current `/dev` handle can be retrieved by friendly name.
 
-My use case for this is doing development on embedded devices; I often have several USB TTYs connected to my computer, but the particular `/dev` handles they are at change occasionally.  ttynamed allows me to replace:
+I use this for doing development on embedded devices; I often have several USB TTYs connected to my laptop, but their particular `/dev` handles change occasionally.  ttynamed allows me to replace this time-wating process:
 ```
 ➜  ~ screen /dev/ttyUSB4
 Cannot exec '/dev/ttyUSB4': No such file or directory
@@ -15,5 +15,5 @@ Cannot exec '/dev/ttyUSB4': No such file or directory
 ```
 ... with a consistent invocation that's easily retrievable in command line history:
 ```
-temp="$(ttynamed my_device)" && screen "$(temp)"
+➜  ~ temp="$(ttynamed my_device)" && screen "$temp"
 ```
