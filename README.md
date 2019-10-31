@@ -21,10 +21,10 @@ Cannot exec '/dev/ttyUSB4': No such file or directory
 ttynamed requires a Linux machine with [udev](https://en.wikipedia.org/wiki/Udev) (specifically, `udevadm` must be available, as seems to be the case on most modern distros).
 
 ## Build 
-These instructions are based on an Ubuntu Docker image, where this tool won't actually work (due to not having udevadm) - likely you'll already have some/all of the prerequisites so can skip at least the first step.
+These instructions are based on a fresh Ubuntu Docker image; likely you will already have some/all of the prerequisites, so can skip at least the first step.
 ```
 Install prerequisites from apt
-# apt update && apt install -y curl git gcc g++
+# apt update && apt install -y curl git gcc g++ udev
 
 Install Rust tools (from https://www.rust-lang.org/tools/install )
 $ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
