@@ -32,16 +32,21 @@ struct Tty {
 }
 
 /// Include inherent information, and present device handle
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 struct PresentTty {
     tty: Tty,
     device: String,
 }
 
-/// Maps from friendly name to Tty instance
-// Using this rather than a raw HashMap, because it might be nice to have program settings here too
+/// Configuration for ttynamed
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Configuration {
+    /// Friendly names of Ttys that we don't normally show in the listing
+    // Using friendly names to refer to hidden devices, rather than the Tty
+    // type, to get a cleaner UI and a degree of self-commenting configuration
+    hidden_friendly_names: HashSet<String>,
+
+    /// Maps from friendly name to Tty instance
     ttys: HashMap<String, Tty>,
 }
 
@@ -165,6 +170,10 @@ fn run_app() -> Result<(), String> {
     let subs = vec!(
         SubCommand::with_name("list")
             .about("Shows available TTYs and aliases")
+            .arg(Arg::with_name("all")
+                .help("Also display hidden TTYs")
+                .short("a")
+                .long("all"))
             ,
         SubCommand::with_name("add")
             .about("Add or modify a tty device alias")
@@ -174,7 +183,10 @@ fn run_app() -> Result<(), String> {
             .arg(Arg::with_name("name")
                 .help("Friendly name for the new alias")
                 .required(true))
-            // TODO Add optional --hide flag, to hide the TTY in listings
+            .arg(Arg::with_name("hide")
+                .help("Hide this TTY in list default output")
+                .short("s") // As in "shhhh..." or "silent"; -h is too close to "help".
+                .long("hide"))
             ,
         SubCommand::with_name("delete")
             .about("Delete a tty device alias")
@@ -211,9 +223,10 @@ fn run_app() -> Result<(), String> {
     let use_colour = true; // TODO make this smarter, and use it to decide whether to pretty-print tables
 
     match arguments.subcommand() {
-        ("list", _) => {
+        ("list", Some(list_arguments)) => {
             const NUM_COLS: usize = 5;
             let mut rows = Vec::<(termcolor::Color, [String; NUM_COLS])>::new();
+            let mut hidden_count = 0;
 
             // Render differently depending on whether we have a configuration file
             match load_config(&config_file_path) {
@@ -229,8 +242,13 @@ fn run_app() -> Result<(), String> {
                             printed = true;
 
                             not_missing.insert(known);
-                            rows.push((Color::Green, [known.clone(), present.device.clone(),
+                            if !config.hidden_friendly_names.contains(known) ||
+                               list_arguments.is_present("all") {
+                                rows.push((Color::Green, [known.clone(), present.device.clone(),
                                 pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
+                            } else {
+                                hidden_count += 1;
+                            }
                         }
 
                         if !printed {
@@ -249,8 +267,13 @@ fn run_app() -> Result<(), String> {
 
                     // Also, display the TTY hardware we know about, but that isn't connected
                     for known in config.ttys.iter().filter(|k| !not_missing.contains(k.0)) {
-                        rows.push((Color::Red, [known.0.clone(), "(missing)".to_string(),
-                            pon(&known.1.manufacturer), pon(&known.1.model), pon(&known.1.serial)]));
+                        let (friendly, tty) = known;
+
+                        if !config.hidden_friendly_names.contains(friendly) ||
+                           list_arguments.is_present("all") {
+                            rows.push((Color::Red, [friendly.clone(), "(missing)".to_string(),
+                                pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
+                        }
                     }
                 },
 
@@ -294,7 +317,12 @@ fn run_app() -> Result<(), String> {
             }
 
             if rows.is_empty() {
-                println!("No USB TTYs present.");
+                if hidden_count > 0 {
+                    println!("{} hidden USB {} present, no others. (show with --all)",
+                        hidden_count, if hidden_count == 1 {"TTY"} else {"TTYs"});
+                } else {
+                    println!("No USB TTYs present.");
+                }
             }
         },
 
@@ -356,9 +384,14 @@ fn run_app() -> Result<(), String> {
             }
             for name in &to_remove {
                 config.ttys.remove(name);
+                config.hidden_friendly_names.remove(name);
             }
 
             config.ttys.insert(friendly.clone(), to_add.tty);
+
+            if add_arguments.is_present("hide") {
+                config.hidden_friendly_names.insert(friendly.clone());
+            }
 
             save_config(config, config_file_path)?;
 

@@ -48,5 +48,5 @@ $ cargo install cargo-deb
 
 install ttynamed
 $ cd ttynamed
-$ cargo deb --install
+# cargo deb --install
 ```
