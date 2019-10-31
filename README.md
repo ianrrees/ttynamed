@@ -35,13 +35,13 @@ $ source $HOME/.cargo/env
 Clone the ttynamed repository
 $ git clone https://github.com/ianrrees/ttynamed.git
 
-build/run ttynamed program
+Build/run ttynamed program
 $ cd ttynamed
 $ cargo run -- --help
 ```
 
 ## Install
-Currently, ttynamed is distributed as source, so you'll need to be in a position to build it as above.  To install on a Debian/Ubuntu machine, one option is to use [cargo-deb](https://github.com/mmstick/cargo-deb)`:
+Currently, ttynamed is distributed as source, so you'll need to be in a position to build it as above.  To install on a Debian/Ubuntu machine, one option is to use [cargo-deb](https://github.com/mmstick/cargo-deb):
 ```
 install cargo-deb
 $ cargo install cargo-deb
