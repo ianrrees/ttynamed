@@ -1,3 +1,4 @@
+/// ttynamed - Tool for managing USB serial devices
 
 extern crate clap;
 use clap::{Arg, App, AppSettings, SubCommand};
@@ -290,6 +291,10 @@ fn run_app() -> Result<(), String> {
                     }
                 }
                 println!("");
+            }
+
+            if rows.is_empty() {
+                println!("No USB TTYs present.");
             }
         },
 
