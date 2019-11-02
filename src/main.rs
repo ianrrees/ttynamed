@@ -29,6 +29,7 @@ struct Tty {
     manufacturer: Option<String>,
     model: Option<String>,
     serial: Option<String>,
+    interface_number: Option<String>,
 }
 
 /// Include inherent information, and present device handle
@@ -64,7 +65,7 @@ fn udevadm_decode<'a>(raw: &'a str) -> Cow<'a, str> {
     })
 }
 
-fn read_usb_info(dev: &PathBuf) -> Option<PresentTty> {
+fn read_usb_info(dev: PathBuf) -> Option<PresentTty> {
     let raw_info = Command::new("udevadm")
         .arg("info").arg("-q").arg("property").arg("--export").arg("-p")
         .arg(&dev)
@@ -84,7 +85,7 @@ fn read_usb_info(dev: &PathBuf) -> Option<PresentTty> {
         }
     }
 
-    // Ignore anything except USB things
+    // Ignore non-USB things
     if fields.get("ID_BUS") != Some(&String::from("usb")) {
         return None;
     }
@@ -97,9 +98,10 @@ fn read_usb_info(dev: &PathBuf) -> Option<PresentTty> {
     if let Some(devname) = extract_field("DEVNAME") {
         Some( PresentTty{
             tty: Tty {
-                manufacturer: extract_field("ID_VENDOR_ENC"),
-                model:        extract_field("ID_MODEL_ENC"),
-                serial:       extract_field("ID_SERIAL_SHORT"),
+                manufacturer:     extract_field("ID_VENDOR_ENC"),
+                model:            extract_field("ID_MODEL_ENC"),
+                serial:           extract_field("ID_SERIAL_SHORT"),
+                interface_number: extract_field("ID_USB_INTERFACE_NUM"),
             },
             device: devname })   
     } else {
@@ -107,23 +109,18 @@ fn read_usb_info(dev: &PathBuf) -> Option<PresentTty> {
     }
 }
 
-// TODO Handle devices where there are multiple dev entries for the same device
 fn available_ttys() -> Vec<PresentTty> {
     // Generate a list of device handles to inspect - https://stackoverflow.com/a/9914339
-    let mut devs = Vec::new();
+    let mut ttys = Vec::new();
+
     for candidate in glob("/sys/class/tty/*/device/driver").expect("Failed to read glob pattern") {
         if let Ok(path) = candidate {
             // Turn /sys/class/tty/ttyWhatever/device/driver in to /sys/class/tty/ttyWhatever
             if let Some(devname) = path.ancestors().nth(2) {
-                devs.push(devname.to_path_buf());
+                if let Some(tty) = read_usb_info(devname.to_path_buf()) {
+                    ttys.push(tty);
+                }
             }
-        }
-    }
-
-    let mut ttys = Vec::new();
-    for dev in devs {
-        if let Some(tty) = read_usb_info(&dev) {
-            ttys.push(tty);
         }
     }
 
