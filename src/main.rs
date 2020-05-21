@@ -36,6 +36,7 @@ struct Tty {
 #[derive(Debug)]
 struct PresentTty {
     tty: Tty,
+    available: bool,
     device: String,
 }
 
@@ -103,7 +104,8 @@ fn read_usb_info(dev: PathBuf) -> Option<PresentTty> {
                 serial:           extract_field("ID_SERIAL_SHORT"),
                 interface_number: extract_field("ID_USB_INTERFACE_NUM"),
             },
-            device: devname })   
+            available: File::open(&devname).is_ok(),
+            device: devname } )   
     } else {
         None
     }
@@ -221,7 +223,9 @@ fn run_app() -> Result<(), String> {
 
     match arguments.subcommand() {
         ("list", Some(list_arguments)) => {
-            const NUM_COLS: usize = 5;
+            const NUM_COLS: usize = 6;
+            const USED: &str = "used";
+
             let mut rows = Vec::<(termcolor::Color, [String; NUM_COLS])>::new();
             let mut hidden_count = 0;
 
@@ -241,8 +245,14 @@ fn run_app() -> Result<(), String> {
                             not_missing.insert(known);
                             if !config.hidden_friendly_names.contains(known) ||
                                list_arguments.is_present("all") {
-                                rows.push((Color::Green, [known.clone(), present.device.clone(),
-                                pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
+                                let colour = if !present.available {
+                                    Color::Yellow
+                                } else {
+                                    Color::Green
+                                };
+                                rows.push((colour, [known.clone(), present.device.clone(),
+                                    if present.available {String::new()} else {USED.to_string()},
+                                    pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
                             } else {
                                 hidden_count += 1;
                             }
@@ -251,13 +261,15 @@ fn run_app() -> Result<(), String> {
                         if !printed {
                             let colour = if tty.manufacturer.is_none() ||
                                             tty.model.is_none() ||
-                                            tty.serial.is_none() {
+                                            tty.serial.is_none() ||
+                                            !present.available {
                                              Color::Yellow
                                          } else {
                                              Color::Black // Sentinel for no colour
                                          };
 
                             rows.push((colour, [String::new(), present.device,
+                                if present.available {String::new()} else {USED.to_string()},
                                 pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
                         }
                     }
@@ -269,7 +281,8 @@ fn run_app() -> Result<(), String> {
                         if !config.hidden_friendly_names.contains(friendly) ||
                            list_arguments.is_present("all") {
                             rows.push((Color::Red, [friendly.clone(), "(missing)".to_string(),
-                                pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial)]));
+                                String::new(), pon(&tty.manufacturer), pon(&tty.model),
+                                pon(&tty.serial)]));
                         }
                     }
                 },
@@ -280,8 +293,10 @@ fn run_app() -> Result<(), String> {
                     println!("");
                     for present in available_ttys() {
                         let tty = present.tty;
-                        rows.push((Color::Black, [present.device, pon(&tty.manufacturer),
-                            pon(&tty.model), pon(&tty.serial), String::new()]));
+                        rows.push((Color::Black, [present.device,
+                            if present.available {String::new()} else {USED.to_string()},
+                            pon(&tty.manufacturer), pon(&tty.model), pon(&tty.serial),
+                            String::new()]));
                     }
                 }
             };
