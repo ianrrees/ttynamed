@@ -1,3 +1,17 @@
+# Don't Use This
+ttynamed only works on Linux, and Linux has a better solution built in.  It was a good exercise anyway...
+
+`/dev/serial/by-id` contains symlinks to connected serial devices, where the name of the link is as uniquely identifiable as ttynamed managed.  So, the easy way to solve the below scenario is to make and use a set of links like:
+
+```ln -s /dev/serial/by-id/usb-Silicon_Labs_CP2104_USB_to_UART_Bridge_Controller_01834F50-if00-port0 ~/work/serial/thing_a
+
+screen ~/work/serial/thing_a
+
+# To check if thing_a is connected first, you could do some variation on:
+if [ -e ~/work/serial/thing_a ]; then screen ~/work/serial/thing_a; else echo "not connected"; fi
+```
+
+
 # ttynamed
 ttynamed lets you assign "friendly names" to particular USB serial devices, so that a device's current `/dev` handle can be retrieved by friendly name.
 
